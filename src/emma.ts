@@ -66,7 +66,10 @@ export function buildEmmaPayload(input: EmmaPayloadInput): Record<string, unknow
 export async function callEmma(endpoint: "a11y2billv2" | "ocr2bill", payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const apiKey = emmaApiKey();
   if (!apiKey) {
-    throw new Error("未配置 Emma API Key：请设置 EMMA_API_KEY 或挂载 /data/.emma-key");
+    return {
+      configured: false,
+      message: "未配置 Emma API Key：请设置环境变量 EMMA_API_KEY，或把 key 写入挂载文件 /data/.emma-key",
+    };
   }
   const body = JSON.stringify(payload);
   const timestamp = String(Math.floor(Date.now() / 1000));
