@@ -34,6 +34,8 @@ const BUSINESS_TOOLS = [
   "delete_tag_groups",
   "delete_tags",
   "disconnect_qianji",
+  "emma_classify",
+  "emma_ocr",
   "get_bill",
   "get_bills",
   "get_bill_statistics",
