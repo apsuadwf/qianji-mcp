@@ -828,6 +828,59 @@ test("set_budget 通过 MCP 校验必填范围、写入与回读确认", async (
   assert.equal(writes, 1);
 });
 
+test("emma_classify 通过 MCP 组装目录并返回 AI 建议", async (t) => {
+  const { store, app, token } = setupApp({
+    fetch: async (input) => {
+      const path = new URL(String(input)).pathname;
+      throw new Error(`unexpected upstream path: ${path}`);
+    },
+  });
+  t.after(async () => {
+    await app.close();
+    store.close();
+  });
+  const accountId = store.verifyPat(token)!.accountId!;
+  const now = Date.now();
+  store.setUserCache(accountId, { id: "uid-test", viptype: -1, __baseCurrency: "CNY" }, now);
+  store.setCatalogCache(accountId, "books", "", [{ bookid: "1", name: "账本", visible: 1 }], now);
+  store.setCatalogCache(accountId, "categories", "-1", [
+    { id: "2", name: "餐饮", parentid: "-1", type: 0, children: [{ id: "3", name: "午餐", parentid: "2", type: 0 }] },
+  ], now);
+  store.setCatalogCache(accountId, "assets", "", [
+    { id: "9", name: "微信", currency: "CNY", type: 0 },
+  ], now);
+  store.setSyncState(accountId, { cursor: 1 });
+
+  const savedKey = process.env.EMMA_API_KEY;
+  const savedFetch = globalThis.fetch;
+  process.env.EMMA_API_KEY = "test-key";
+  let emmaBody: Record<string, unknown> | undefined;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    emmaBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    return Response.json({ category_name: "餐饮", sub_category_name: "午餐", amount: 15 });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = savedFetch;
+    if (savedKey === undefined) delete process.env.EMMA_API_KEY;
+    else process.env.EMMA_API_KEY = savedKey;
+  });
+
+  const client = new Client(
+    { name: "emma-tool-test", version: "1.0.0" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  t.after(() => client.close());
+  await client.connect(transport(app, token));
+  const result = await client.callTool({ name: "emma_classify", arguments: { text: "猪脚饭 15 元" } });
+  const structured = result.structuredContent as Record<string, unknown>;
+  assert.equal(structured.category_name, "餐饮");
+  assert.equal(structured.amount, 15);
+  assert.equal(emmaBody?.userId, "uid-test");
+  const sentCategories = (emmaBody?.categories ?? []) as Array<{ name: string }>;
+  assert.deepEqual(sentCategories.map((item) => item.name), ["餐饮"]);
+  assert.ok(Array.isArray(emmaBody?.assets));
+});
+
 test("get_budget 通过 MCP 返回已校验的只读预算结构", async (t) => {
   const { store, app, token } = setupApp({
     fetch: async (input) => {
