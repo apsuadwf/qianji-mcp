@@ -166,12 +166,15 @@ export async function startServer(config = loadConfig()): Promise<{
 
 /** 返回幂等关闭函数，先停止接收 HTTP 请求，再关闭 MCP 和存储。 */
 export function createShutdown(resources: Promise<{
-  server: { close(callback: (error?: Error) => void): unknown };
+  server: { close(callback: (error?: Error) => void): unknown; keepAliveTimeout?: number };
   store: Pick<DataStore, "close">;
   app: Pick<HttpApplication, "close">;
 }>): () => Promise<void> {
   let pending: Promise<void> | undefined;
   return () => pending ??= resources.then(async ({ server, app, store }) => {
+    // Bun 的 node:http close() 会等空闲 keep-alive 连接超时（约 6 秒）才回调；
+    // 关闭前把间隔压到最小，让已完成响应的连接尽快断开，在途请求不受影响。
+    if (typeof server.keepAliveTimeout === "number") server.keepAliveTimeout = 1;
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
     });

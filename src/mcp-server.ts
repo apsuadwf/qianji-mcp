@@ -35,6 +35,7 @@ import {
   TAG_COLOR_PATTERN,
 } from "./bill-rules.ts";
 import { MoneyTrackService } from "./qianji-service.ts";
+import { buildEmmaPayload, callEmma, type EmmaBillType, type EmmaCategoryNode } from "./emma.ts";
 import serverInstructions from "./server-instructions.md" with { type: "text" };
 
 const bindingExpiryFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -1717,6 +1718,77 @@ export function createMoneyTrackMcp(
     },
     async ({ orderedGroupIds }, ctx) =>
       toolResult(async () => service.reorderTagGroups(await userId(principal, store), orderedGroupIds), ctx, principal, bindingTickets),
+  );
+
+
+  const emmaCategoryTree = async (accountId: number, type: 0 | 1): Promise<EmmaCategoryNode[]> => {
+    const tree = await service.listCategories(accountId, "-1", type);
+    return tree
+      .map((node) => {
+        const children = Array.isArray(node.children) ? node.children : [];
+        const subs = children
+          .map((child) => String((child as Record<string, unknown>).name ?? "").trim())
+          .filter(Boolean);
+        return { name: String(node.name ?? "").trim(), ...(subs.length ? { subs } : {}) };
+      })
+      .filter((node) => node.name.length > 0);
+  };
+
+  const emmaAssetList = async (accountId: number): Promise<[string, string][]> => {
+    const list = await service.listAssets(accountId, true);
+    return list
+      .map((asset) => [String(asset.name ?? "").trim(), String(asset.currency ?? "CNY")] as [string, string])
+      .filter(([name]) => name.length > 0);
+  };
+
+  const runEmma = async (
+    endpoint: "a11y2billv2" | "ocr2bill",
+    text: string,
+    billType: EmmaBillType,
+    duration?: number,
+  ): Promise<Record<string, unknown>> => {
+    const accountId = await userId(principal, store);
+    const account = await store.requireAccount(accountId);
+    const payload = buildEmmaPayload({
+      userId: account.uid,
+      billType,
+      text,
+      categories: await emmaCategoryTree(accountId, billType === "income" ? 1 : 0),
+      assets: await emmaAssetList(accountId),
+      ...(duration === undefined ? {} : { duration }),
+    });
+    return callEmma(endpoint, payload);
+  };
+
+  server.registerTool(
+    "emma_classify",
+    {
+      description: "调用钱迹官方 AI（Emma）把一句话解析成账单建议，含分类、子分类、资产、备注和金额，只返回建议，不写入账单",
+      inputSchema: z.strictObject({
+        text: z.string().trim().min(1).max(4096).describe("自然语言描述，例如「猪脚饭 15 元」"),
+        billType: z.enum(["expense", "income", "transfer", "reimburse", "credit_pay"]).optional().default("expense")
+          .describe("账单类型，默认支出"),
+      }).meta({ required: ["text"] }),
+      outputSchema: z.looseObject({}),
+      annotations: readAnnotations,
+    },
+    async ({ text, billType }, ctx) =>
+      toolResult(async () => runEmma("a11y2billv2", text, billType), ctx, principal, bindingTickets),
+  );
+
+  server.registerTool(
+    "emma_ocr",
+    {
+      description: "调用钱迹官方 AI（Emma）把小票或截图文本解析成账单建议，只返回建议，不写入账单",
+      inputSchema: z.strictObject({
+        text: z.string().trim().min(1).max(4096).describe("小票 OCR 出来的纯文本"),
+        duration: z.number().int().nonnegative().optional().describe("小票处理耗时（毫秒），未知时省略"),
+      }).meta({ required: ["text"] }),
+      outputSchema: z.looseObject({}),
+      annotations: readAnnotations,
+    },
+    async ({ text, duration }, ctx) =>
+      toolResult(async () => runEmma("ocr2bill", text, "expense", duration), ctx, principal, bindingTickets),
   );
 
   if (principal.role === "admin") registerAdminTools(server, store, principal, bindingTickets);
